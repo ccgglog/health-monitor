@@ -124,11 +124,19 @@ freshness_check  2026-11-05 23:40
 ## 怎么用
 
 ```bash
-python freshness_check.py           # 人读报告
-python freshness_check.py --json    # 机器读（给告警系统）
+python health.py           # 人读报告（退出码 0/1/2）
+python health.py --json    # 机器读（给告警系统）
 ```
 
-纯标准库。
+纯标准库。退出码分级设计成能直接塞进定时任务：
+
+```bash
+python health.py || curl -X POST "$WEBHOOK" -d "服务异常"
+```
+
+演示快照里放了 7 个任务：4 个正常、2 个已停用、1 个漏跑。
+跑一遍能看到「停用不报警」和「漏跑判 FAIL」同时生效。
+`verdict()` 接受任意快照字典，接你自己的监控数据只需要拼好那个结构。
 
 ---
 
