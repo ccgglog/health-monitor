@@ -21,8 +21,9 @@
 一个布尔值给不出处置方案。
 
 用法：
-  python health.py          # 内置合成快照演示
-  python health.py --json   # 机器可读（退出码同样分级）
+  python health.py            # 内置合成快照演示（退出码恒 0）
+  python health.py --json     # 机器可读
+  python health.py --strict   # 退出码反映判定（0 正常 / 1 警告 / 2 需处理）
 """
 import json
 import sys
@@ -35,7 +36,7 @@ HB_GAP_WARN_H = 2.0    # 近 24h 内最大空档超过它 = 守护曾经停过
 SPREAD_WARN_H = 6.0    # 各任务 age 极差超过它 = 有任务被漏掉
 
 
-def judge_task(age_h, enabled=True, driver='cli'):
+def judge_task(age_h, enabled=True, driver='cron'):
     """单个任务的判定。返回 (level, code, note)"""
     if not enabled:
         return ('SKIP', 'DISABLED', '配置已停用，不参与判定')
@@ -43,9 +44,9 @@ def judge_task(age_h, enabled=True, driver='cli'):
         return ('FAIL', 'MISSED', '超过 %.0fh，判定漏跑，需要补跑' % FAIL_H)
     if age_h >= WARN_H:
         return ('WARN', 'LATE', '超过 %.0fh，这一轮可能还没跑' % WARN_H)
-    if driver == 'guard' and age_h >= GUARD_FAIL_H:
+    if driver == 'daemon' and age_h >= GUARD_FAIL_H:
         return ('WARN', 'STALLED',
-                '守护驱动应每 30s 一跳，已 %.1fh 未动' % age_h)
+                '常驻进程应每 30s 一跳，已 %.1fh 未动' % age_h)
     return ('OK', 'OK', '')
 
 
@@ -70,7 +71,7 @@ def verdict(snapshot):
 
     for t in snapshot['tasks']:
         level, code, note = judge_task(t['age_h'], t.get('enabled', True),
-                                       t.get('driver', 'cli'))
+                                       t.get('driver', 'cron'))
         items.append({'name': t['name'], 'level': level, 'code': code,
                       'age_h': t['age_h'], 'note': note})
 
@@ -106,18 +107,20 @@ def verdict(snapshot):
 
 
 # ---------------------------------------------------------------- 演示快照
+# 场景：一个每天定时跑的数据平台（ETL + 日报 + 行情同步）。
+# 任务是通用名字，只演示判定逻辑，不对应任何真实项目。
 def build_demo():
     return {
         'tasks': [
-            {'name': 'main',   'age_h': 2.6,  'enabled': True,  'driver': 'cli'},
-            {'name': 'sub',    'age_h': 2.6,  'enabled': True,  'driver': 'cli'},
-            {'name': 'xsmom',  'age_h': 2.6,  'enabled': True,  'driver': 'cli'},
-            {'name': 'swing',  'age_h': 0.0,  'enabled': True,  'driver': 'guard'},
+            {'name': 'orders_etl',  'age_h': 2.6,  'enabled': True,  'driver': 'cron'},
+            {'name': 'users_etl',   'age_h': 2.6,  'enabled': True,  'driver': 'cron'},
+            {'name': 'report_daily','age_h': 2.6,  'enabled': True,  'driver': 'cron'},
+            {'name': 'sync_prices', 'age_h': 0.0,  'enabled': True,  'driver': 'daemon'},
             # 已停用的任务：不该报警，也不该参与一致性判定
-            {'name': 'old_a',  'age_h': 651.6, 'enabled': False, 'driver': 'guard'},
-            {'name': 'old_b',  'age_h': 1112.9, 'enabled': False, 'driver': 'guard'},
+            {'name': 'legacy_a',    'age_h': 651.6, 'enabled': False, 'driver': 'daemon'},
+            {'name': 'legacy_b',    'age_h': 1112.9,'enabled': False, 'driver': 'daemon'},
             # 漏跑
-            {'name': 'slow',   'age_h': 39.6, 'enabled': True,  'driver': 'cli'},
+            {'name': 'backlog_etl', 'age_h': 39.6, 'enabled': True,  'driver': 'cron'},
         ],
         'panel': {'alive': True, 'single': True},
         'heartbeat': {'gap_h': 0.02},
@@ -127,13 +130,14 @@ def build_demo():
 def main():
     snap = build_demo()
     v = verdict(snap)
+    strict = '--strict' in sys.argv
 
     if '--json' in sys.argv:
         print(json.dumps(v, ensure_ascii=False, indent=2))
-        return v['overall']
+        return v['overall'] if strict else 0
 
     print('=' * 66)
-    print('服务健康检查')
+    print('服务健康检查（演示快照）')
     print('=' * 66)
     print('%-14s %-8s %-8s %10s  %s' % ('任务', '等级', '代码', '年龄(h)', '说明'))
     print('-' * 66)
@@ -145,11 +149,14 @@ def main():
         print('%-14s %-8s %-8s %10.1f  %s'
               % (i['name'], i['level'], i['code'], i['age_h'], i['note']))
     print('-' * 66)
-    print('结论: %s（退出码 %d）' % (v['verdict'], v['overall']))
+    print('判定结果: %s（对应退出码 %d）' % (v['verdict'], v['overall']))
     print('=' * 66)
-    print('注：old_a / old_b 已停用，不报警也不参与跨任务一致性判定。')
-    print('    如果不排除它们，age 极差会把整个池子判成异常。')
-    return v['overall']
+    print('注1：legacy_a / legacy_b 已停用，不报警也不参与跨任务一致性判定。')
+    print('     如果不排除它们，age 极差会把整个池子判成异常。')
+    print('注2：演示模式退出码恒为 0，方便直接 python health.py 看效果。')
+    print('     接实际监控数据时加 --strict，退出码才反映结论（0/1/2），')
+    print('     这样能直接塞进 cron：python health.py --strict || 告警')
+    return 0 if not strict else v['overall']
 
 
 if __name__ == '__main__':
